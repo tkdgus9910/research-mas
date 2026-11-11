@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
+
+# 데이터는 기본적으로 커밋하지 않는다(대용량·비공개). 공개 가능한 소용량 데이터면 아래 줄을 지운다.
+data/raw/*
+data/interim/*
+data/processed/*
+!data/**/.gitkeep
+
+# 실행 부산물
+cache/
+logs/*.log
+
+# 개인 설정
+.claude/settings.local.json
+.env
