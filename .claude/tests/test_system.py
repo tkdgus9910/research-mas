@@ -108,6 +108,26 @@ class GateTest(Base):
         self.assertEqual(self.bash("cat > src/x.py <<'EOF'\nprint(1)\nEOF"), "deny")
         self.assertEqual(self.bash("python profiling/profile.py"), "allow")
 
+    def test_git_commands_are_not_writes(self):
+        # 커밋 메시지의 파일 이름·이메일 꺾쇠·run.py 언급을 쓰기 명령으로 오인하지 않는다.
+        msg = "[intent] brief\n\nupdate state.json and run.py\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+        self.assertEqual(self.bash(f'git add research/brief.md research/state.json && git commit -m "{msg}"'), "allow")
+        self.assertEqual(self.bash("git add research/state.json research/protocol.lock.md"), "allow")
+        heredoc = "git commit -F - <<'EOF'\n[gate1] lock\n\nprotocol.lock.md > state.json; rm src/x\npython run.py\nEOF"
+        self.assertEqual(self.bash(heredoc), "allow")
+        self.assertEqual(self.gate("PowerShell", {"command": 'git commit -m "x <a@b.com> state.json"'}), "allow")
+        self.assertEqual(self.bash("git diff research/state.json"), "allow")
+
+    def test_shell_writes_still_caught(self):
+        self.assertEqual(self.bash("git add -A && echo '{}' > research/state.json"), "deny")
+        self.assertEqual(self.bash("rm research/state.json"), "deny")
+        self.assertEqual(self.bash("git checkout -- research/state.json"), "deny")
+        self.assertEqual(self.gate("PowerShell", {"command": "Set-Content research/state.json '{}'"}), "deny")
+        self.assertEqual(self.bash("cat a.md >> research/protocol.lock.md"), "ask")
+        self.assertEqual(self.gate("PowerShell", {"command": "Copy-Item research/design.md research/protocol.lock.md"}), "ask")
+        self.assertEqual(self.bash("cat > src/x.py <<'EOF'\nprint(1)\nEOF"), "deny")
+        self.assertEqual(self.bash("py run.py --only s1"), "deny")
+
     def test_outside_project_and_other_tools_ignored(self):
         self.assertEqual(self.write("/tmp/elsewhere/src/x.py"), "allow")
         self.assertEqual(self.gate("Read", {"file_path": "src/x.py"}), "allow")

@@ -31,15 +31,30 @@ AUDITORS = {"design-reviewer", "simplicity-auditor", "method-auditor", "result-v
 WRITE_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
-# 셸에서 파일을 바꾸는 명령·연산자
-SHELL_WRITE = re.compile(
-    r"(>|\btee\b|\bsed\s+-i|\brm\b|\bmv\b|\bcp\b|\btruncate\b|\bdd\b|\btouch\b"
-    r"|\bgit\s+(checkout|restore|rm|mv|stash|reset)\b"
-    r"|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)",
-    re.IGNORECASE,
-)
-SHELL_CODE_REDIRECT = re.compile(r">\s*[\"']?(\./)?(src|configs|prompts|schemas)/")
-SHELL_RUNS_PIPELINE = re.compile(r"(scaffold\.py|(^|[\s/\\\"'])run\.py\b)")
+# ---- 셸 명령 검사용 패턴
+# 메시지 본문(heredoc)과 읽기 전용 git 명령은 검사에서 뺀다. 커밋 메시지의 파일 이름이나
+# 이메일 꺾쇠(<a@b>)를 쓰기 명령으로 오인하지 않기 위함이다.
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.DOTALL)
+SEGMENT_SPLIT = re.compile(r"\n|;|&&|\|\||\|")
+GIT_READONLY = re.compile(r"^\s*git\s+(add|commit|status|diff|log|show|push|pull|fetch|branch|tag)\b")
+WRITE_CMD = (r"\b(tee|rm|mv|cp|truncate|touch|dd|sed\s+-i\S*|git\s+(checkout|restore|rm|mv)"
+             r"|Set-Content|Add-Content|Clear-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item)\b")
+RUNS_PIPELINE = re.compile(r"\b(python[0-9.]*|py|uv\s+run)\b.*\b(scaffold\.py|run\.py)\b", re.IGNORECASE)
+CODE_REDIRECT = re.compile(r">[ \t]*[\"']?(\./)?(src|configs|prompts|schemas)/")
+OVERRIDE = re.compile(r"state\.py\b.*--override")
+
+
+def writes_to(segment: str, filename: str) -> bool:
+    """명령 한 토막이 해당 파일을 바꾸는가: 리다이렉트 대상이거나, 쓰기 명령의 인자."""
+    name = re.escape(filename)
+    redirect = re.search(r">[ \t]*[\"']?[^\s\"'<>]*" + name, segment)
+    command = re.search(WRITE_CMD + r".*" + name, segment, re.IGNORECASE)
+    return bool(redirect or command)
+
+
+def shell_segments(cmd: str) -> list:
+    body = HEREDOC.sub("\n", cmd)
+    return [s for s in SEGMENT_SPLIT.split(body) if s.strip() and not GIT_READONLY.match(s)]
 
 
 def emit(decision: str, reason: str) -> None:
@@ -91,16 +106,16 @@ def check_write(rel: str, agent: str, locked: bool) -> None:
 
 
 def check_shell(cmd: str, agent: str, locked: bool) -> None:
-    writes = bool(SHELL_WRITE.search(cmd))
-    if "state.json" in cmd and writes:
-        emit("deny", "R1: research/state.json 은 state.py 로만 변경한다.")
-    if "protocol.lock.md" in cmd and writes:
-        emit("ask", "R2: 프로토콜 파일을 바꾸는 명령이다. 사용자 승인이 있는 경우에만 허용한다.")
-    if "state.py" in cmd and "--override" in cmd:
-        emit("ask", "R7: 감사 판정을 무시하고 다음 단계로 진행하려 한다. 사용자가 결정한 경우에만 허용한다.")
-    if not locked and (SHELL_RUNS_PIPELINE.search(cmd) or SHELL_CODE_REDIRECT.search(cmd)):
-        emit("deny", "R6: 프로토콜 확정 전에는 파이프라인 골격 생성·실행을 할 수 없다. "
-                     "프로파일링은 profiling/ 의 스크립트로 수행한다.")
+    for seg in shell_segments(cmd):
+        if writes_to(seg, "state.json"):
+            emit("deny", "R1: research/state.json 은 state.py 로만 변경한다.")
+        if writes_to(seg, "protocol.lock.md"):
+            emit("ask", "R2: 프로토콜 파일을 바꾸는 명령이다. 사용자 승인이 있는 경우에만 허용한다.")
+        if OVERRIDE.search(seg):
+            emit("ask", "R7: 감사 판정을 무시하고 다음 단계로 진행하려 한다. 사용자가 결정한 경우에만 허용한다.")
+        if not locked and (RUNS_PIPELINE.search(seg) or CODE_REDIRECT.search(seg)):
+            emit("deny", "R6: 프로토콜 확정 전에는 파이프라인 골격 생성·실행을 할 수 없다. "
+                         "프로파일링은 profiling/ 의 스크립트로 수행한다.")
 
 
 def main() -> None:
